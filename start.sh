@@ -5,19 +5,34 @@ DIR="$(cd "$(dirname "$0")" && pwd)"
 cd "$DIR"
 
 # --- 1) dependencies (idempotent) -------------------------------------------
-if python3 -c "import requests, bs4, kafka, redis, pydantic" 2>/dev/null; then
+PY=python3
+[ -x "$DIR/.venv/bin/python3" ] && PY="$DIR/.venv/bin/python3"
+
+if "$PY" -c "import requests, bs4, kafka, redis, pydantic" 2>/dev/null; then
   echo "Dependencies OK, skipping install."
 else
   echo "Installing dependencies..."
-  PIP=()
-  if command -v pip3 >/dev/null; then PIP=(pip3); elif command -v pip >/dev/null; then PIP=(pip); else echo "ERROR: pip not found"; exit 1; fi
-  "${PIP[@]}" install -r requirements.txt 2>/dev/null \
-    || "${PIP[@]}" install --user -r requirements.txt 2>/dev/null \
-    || "${PIP[@]}" install --break-system-packages -r requirements.txt \
-    || { echo "ERROR: pip install failed (check python3/pip + internet)"; exit 1; }
+  installed=0
+  # Try 1: the active venv's pip (if a venv exists)
+  [ "$PY" != python3 ] && "$PY" -m pip install -r requirements.txt >/dev/null 2>&1 && installed=1
+  # Try 2: system pip, with the common fallbacks
+  [ $installed = 0 ] && pip3 install -r requirements.txt >/dev/null 2>&1 && installed=1
+  [ $installed = 0 ] && pip3 install --user -r requirements.txt >/dev/null 2>&1 && installed=1
+  [ $installed = 0 ] && pip3 install --break-system-packages -r requirements.txt >/dev/null 2>&1 && installed=1
+  # Try 3 (last resort): create the kit's own virtualenv and install there
+  if [ $installed = 0 ]; then
+    echo "System pip blocked -> creating virtualenv .venv ..."
+    python3 -m venv "$DIR/.venv" 2>/dev/null \
+      || { echo "ERROR: venv failed. Install it first:  sudo apt install python3-venv   (or: sudo dnf install python3)"; exit 1; }
+    "$DIR/.venv/bin/python3" -m pip install -r requirements.txt >/dev/null 2>&1 && installed=1
+  fi
+  [ $installed = 1 ] || { echo "ERROR: could not install dependencies (check internet / pip / venv)"; exit 1; }
 fi
-python3 -c "import requests, bs4, kafka, redis, pydantic" \
+# Prove it before starting anything
+"$([ -x "$DIR/.venv/bin/python3" ] && echo "$DIR/.venv/bin/python3" || echo python3)" \
+  -c "import requests, bs4, kafka, redis, pydantic" \
   || { echo "ERROR: dependencies still missing — check logs above"; exit 1; }
+echo "Dependencies OK."
 
 # --- 2) don't double-start ----------------------------------------------------
 pgrep -f "crawl_range.sh"  >/dev/null && echo "Crawler already running, leaving it." \
