@@ -19,7 +19,7 @@ for y in $(seq "$START" -1 "$END"); do
   while true; do
     rc=0
     before=$(wc -l < data/index.jsonl 2>/dev/null || echo 0)
-    "$DIR/venv/bin/python" crawler.py detail \
+    "$PY" crawler.py detail \
       --baslangic "01.01.$y" --bitis "31.12.$y" \
       --direction asc --resume --delay 3.0 \
       >> "$LOG" 2>&1 || rc=$?

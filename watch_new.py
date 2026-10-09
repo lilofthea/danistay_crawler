@@ -100,7 +100,7 @@ def crawl_day(d: date) -> int:
     """Re-crawl one day from page 1; returns the crawler's exit code."""
     with open(ROOT / "logs" / "watch.log", "a", encoding="utf-8") as logf:
         return subprocess.call(
-            [str(ROOT / "venv" / "bin" / "python"), str(ROOT / "crawler.py"), "detail",
+            [sys.executable, str(ROOT / "crawler.py"), "detail",
              "--baslangic", fmt(d), "--bitis", fmt(d), "--start-page", "1",
              "--direction", "asc", "--resume", "--delay", "3.0"],
             cwd=ROOT, stdout=logf, stderr=subprocess.STDOUT)

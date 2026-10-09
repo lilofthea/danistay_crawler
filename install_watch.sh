@@ -6,7 +6,7 @@
 set -e
 DIR="$(cd "$(dirname "$0")" && pwd)"
 mkdir -p "$DIR/logs"
-JOB="0 3 */5 * * cd $DIR && flock -n logs/watch.lock venv/bin/python watch_new.py >> logs/watch.log 2>&1"
+JOB="0 3 */5 * * cd $DIR && DIR=$DIR . ./env.sh && flock -n logs/watch.lock \"\$PY\" watch_new.py >> logs/watch.log 2>&1"
 
 # "|| true": an empty crontab must not end the subshell under set -e
 ( { crontab -l 2>/dev/null | grep -v "watch_new.py"; } || true

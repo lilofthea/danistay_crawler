@@ -83,6 +83,38 @@ CAPTCHA_PAGE_MARKER = "Ben Robot Değilim"
 # appears in a real decision.
 ERROR_PAGE_MARKER = "Ana sayfaya gitmek için tıklayınız"
 
+# Escalating backoff while the site keeps rejecting us. A fixed 60 s retry
+# re-triggers the penalty over and over (observed: hours of 429/captcha loops
+# with zero progress). Escalate: 1m -> 3m -> 10m -> 30m -> 1h (capped);
+# resets only after a real clean run.
+BLOCK_BACKOFFS = [60, 180, 600, 1800, 3600]
+_block_escalation = 0
+
+
+def _fmt_wait(s: int) -> str:
+    return f"{s // 3600}h" if s >= 3600 else (f"{s // 60} min" if s >= 60 else f"{s}s")
+
+
+def _save_throttle():
+    """Persist the throttle multiplier so a watchdog restart doesn't reset it
+    to base delay (which instantly re-triggers the 429 storm)."""
+    try:
+        (OUT_DIR / ".throttle").write_text(f"{THROTTLE:.2f}\n")
+    except OSError:
+        pass
+
+
+def _load_throttle():
+    global THROTTLE
+    try:
+        v = float((OUT_DIR / ".throttle").read_text().strip() or 1)
+        THROTTLE = max(1.0, min(v, THROTTLE_MAX))
+        if THROTTLE > 1.0:
+            print(f"  ~ restored persisted throttle x{THROTTLE:.1f} "
+                  f"(delay {current_delay():.0f}s)", flush=True)
+    except (OSError, ValueError):
+        pass
+
 
 def current_delay() -> float:
     return BASE_DELAY * THROTTLE
@@ -90,12 +122,13 @@ def current_delay() -> float:
 
 def note_throttled(what: str, hard: bool = False):
     """A 429/503/captcha came back - slow down."""
-    global THROTTLE, _clean_streak
+    global THROTTLE, _clean_streak, _block_escalation
     _clean_streak = 0
-    if THROTTLE >= THROTTLE_MAX:
-        return
-    THROTTLE = THROTTLE_MAX if hard else min(THROTTLE * 2, THROTTLE_MAX)
-    print(f"  ~ throttle up, delay now {current_delay():.1f}s ({what})", flush=True)
+    _block_escalation = min(_block_escalation + 1, len(BLOCK_BACKOFFS) - 1)
+    if THROTTLE < THROTTLE_MAX:
+        THROTTLE = THROTTLE_MAX if hard else min(THROTTLE * 2, THROTTLE_MAX)
+        print(f"  ~ throttle up, delay now {current_delay():.1f}s ({what})", flush=True)
+    _save_throttle()
 
 
 def note_captcha() -> int:
@@ -108,14 +141,18 @@ def note_captcha() -> int:
 
 def note_clean():
     """A request succeeded - ease back toward BASE_DELAY after a clean run."""
-    global THROTTLE, _clean_streak, _captcha_strikes
+    global THROTTLE, _clean_streak, _captcha_strikes, _block_escalation
     if THROTTLE <= 1.0:
+        if _block_escalation:
+            _block_escalation = 0
         return
     _clean_streak += 1
     if _clean_streak >= DECAY_AFTER:
         _clean_streak = 0
         THROTTLE = max(THROTTLE / 2, 1.0)
+        _block_escalation = max(_block_escalation - 1, 0)
         print(f"  ~ throttle down, delay now {current_delay():.1f}s", flush=True)
+        _save_throttle()
         if THROTTLE <= 1.0 and _captcha_strikes:
             _captcha_strikes = 0
             print("  ~ recovered to base delay, captcha strikes cleared", flush=True)
@@ -137,9 +174,10 @@ def post_json(path: str, data: dict, max_retries: int = 4) -> dict:
                         strikes = note_captcha()
                         if strikes >= CAPTCHA_LIMIT:
                             raise CaptchaError("reCAPTCHA enabled by server: " + msg)
+                        wait = BLOCK_BACKOFFS[_block_escalation]
                         print(f"  ! captcha error ({strikes}/{CAPTCHA_LIMIT}), "
-                              f"backing off 60s", flush=True)
-                        sleep(60)
+                              f"backing off {_fmt_wait(wait)}", flush=True)
+                        sleep(wait)
                         continue
                     return {"ok": False, "error": msg, "payload": payload}
                 note_clean()
@@ -185,9 +223,10 @@ def getDokuman(dok_id: str, aranan_kelime: str) -> str:
                     strikes = note_captcha()
                     if strikes >= CAPTCHA_LIMIT:
                         raise CaptchaError("reCAPTCHA page from getDokuman")
+                    wait = BLOCK_BACKOFFS[_block_escalation]
                     print(f"  ! captcha page for id={dok_id} ({strikes}/{CAPTCHA_LIMIT}), "
-                          f"backing off 60s", flush=True)
-                    sleep(60)
+                          f"backing off {_fmt_wait(wait)}", flush=True)
+                    sleep(wait)
                     continue
                 # Some decisions come back as a generic "Hata! ... kontroller
                 # başlatılmıştır" page. Not a rate limit, so don't back off;
@@ -271,6 +310,7 @@ def append_meta(obj: dict):
 def crawl(args):
     global BASE_DELAY
     BASE_DELAY = args.delay
+    _load_throttle()
     OUT_DIR.mkdir(exist_ok=True)
     DOCS_DIR.mkdir(exist_ok=True)
     done = load_done() if args.resume else set()
