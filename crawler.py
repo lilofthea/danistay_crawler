@@ -78,6 +78,10 @@ _clean_streak = 0
 # recovery to BASE_DELAY clears the strikes.
 CAPTCHA_LIMIT = 3
 _captcha_strikes = 0
+CAPTCHA_PAGE_MARKER = "Ben Robot Değilim"
+# Footer of the site's error pages (captcha and generic "Hata!"); never
+# appears in a real decision.
+ERROR_PAGE_MARKER = "Ana sayfaya gitmek için tıklayınız"
 
 
 def current_delay() -> float:
@@ -140,7 +144,7 @@ def post_json(path: str, data: dict, max_retries: int = 4) -> dict:
                     return {"ok": False, "error": msg, "payload": payload}
                 note_clean()
                 return {"ok": True, "payload": payload}
-            if r.status_code in (429, 503):
+            if r.status_code in (429, 502, 503, 504):
                 note_throttled(str(r.status_code))
                 wait = 30 * (attempt + 1)
                 print(f"  ! {r.status_code} rate-limited, waiting {wait}s", flush=True)
@@ -175,9 +179,26 @@ def getDokuman(dok_id: str, aranan_kelime: str) -> str:
         try:
             r = SESSION.get(url, timeout=60)
             if r.status_code == 200:
+                # Under captcha the server still answers 200, but with a
+                # "Ben Robot Değilim" error page instead of the decision.
+                if CAPTCHA_PAGE_MARKER in r.text:
+                    strikes = note_captcha()
+                    if strikes >= CAPTCHA_LIMIT:
+                        raise CaptchaError("reCAPTCHA page from getDokuman")
+                    print(f"  ! captcha page for id={dok_id} ({strikes}/{CAPTCHA_LIMIT}), "
+                          f"backing off 60s", flush=True)
+                    sleep(60)
+                    continue
+                # Some decisions come back as a generic "Hata! ... kontroller
+                # başlatılmıştır" page. Not a rate limit, so don't back off;
+                # skip it so --resume tries again on a later run.
+                if ERROR_PAGE_MARKER in r.text:
+                    note_clean()
+                    print(f"  ! site error page for id={dok_id}, skipping", flush=True)
+                    return ""
                 note_clean()
                 return r.text
-            if r.status_code in (429, 503):
+            if r.status_code in (429, 502, 503, 504):
                 note_throttled(str(r.status_code))
                 sleep(30 * (attempt + 1))
                 continue
@@ -218,6 +239,23 @@ def load_done() -> set:
                 except Exception:
                     pass
     return done
+
+
+def count_done_between(baslangic: str, bitis: str) -> int:
+    """How many indexed decisions fall in [baslangic, bitis] (dd.MM.yyyy)."""
+    key = lambda d: tuple(reversed(d.split(".")))   # dd.MM.yyyy -> sortable
+    lo, hi = key(baslangic), key(bitis)
+    n = 0
+    if INDEX_FILE.exists():
+        with open(INDEX_FILE, encoding="utf-8") as f:
+            for line in f:
+                try:
+                    d = json.loads(line).get("kararTarihi") or ""
+                except Exception:
+                    continue
+                if d.count(".") == 2 and lo <= key(d) <= hi:
+                    n += 1
+    return n
 
 
 def append_index(row: dict):
@@ -298,36 +336,51 @@ def crawl(args):
     page_size = min(args.page_size, 100)
     saved = 0
     page = 1
+    if args.start_page:
+        page = args.start_page
+    elif args.resume and args.baslangic and args.bitis:
+        # Already-crawled decisions fill the first pages of this listing.
+        # Paging through them again costs ~1 min/page under throttling, so
+        # jump near the end of them; a 2-page margin covers small shifts in
+        # the site's ordering (ids already done are still skipped).
+        page = max(1, count_done_between(args.baslangic, args.bitis) // page_size - 1)
+    if page > 1:
+        print(f"starting at page {page}", flush=True)
     try:
         while True:
             result = list_fetch(page_size, page)
             if not result["ok"]:
-                print(f"ERROR on page {page}: {result['error']}")
-                break
+                # not the end of the results: exit non-zero so crawl_range.sh
+                # retries instead of marking the year done
+                print(f"ERROR on page {page}: {result['error']}", flush=True)
+                sys.exit(1)
             rows, total, _ = get_rows(result)
             if not rows:
                 break
+            print(f"  page {page}/{-(-total // page_size)}", flush=True)
             for row in rows:
                 rid = str(row["id"])
                 if rid in done:
                     continue
-                # save metadata first (cheap), then full text
+                # full text first: an id only goes into the index once its
+                # text is on disk, so --resume retries anything that failed
+                if not args.no_fulltext:
+                    html = getDokuman(rid, row.get("arananKelime", ""))
+                    if not html:
+                        print(f"  ! no full text for id={rid}, will retry on resume",
+                              flush=True)
+                        continue
+                    raw_html, text = html_to_text(html)
+                    (DOCS_DIR / f"{rid}.html").write_text(raw_html, encoding="utf-8")
+                    (DOCS_DIR / f"{rid}.txt").write_text(
+                        f"Danıştay | {row.get('daireKurul')} | E:{row.get('esasNo')} "
+                        f"K:{row.get('kararNo')} T:{row.get('kararTarihi')}\n"
+                        f"{'=' * 60}\n{text}\n", encoding="utf-8")
+                    sleep(current_delay())
                 append_index(row)
                 done.add(rid)
                 append_meta({"ts": int(time.time()), "id": rid,
                              "crawl_desc": desc})
-                if not args.no_fulltext:
-                    html = getDokuman(rid, row.get("arananKelime", ""))
-                    if html:
-                        raw_html, text = html_to_text(html)
-                        (DOCS_DIR / f"{rid}.html").write_text(raw_html, encoding="utf-8")
-                        (DOCS_DIR / f"{rid}.txt").write_text(
-                            f"Danıştay | {row.get('daireKurul')} | E:{row.get('esasNo')} "
-                            f"K:{row.get('kararNo')} T:{row.get('kararTarihi')}\n"
-                            f"{'=' * 60}\n{text}\n", encoding="utf-8")
-                        sleep(current_delay())
-                    else:
-                        print(f"  ! no full text for id={rid}", flush=True)
                 saved += 1
                 if saved % 25 == 0:
                     print(f"  saved {saved} (total done {len(done)})", flush=True)
@@ -376,6 +429,8 @@ def main():
     p.add_argument("--delay", type=float, default=1.0, help="seconds between full-text fetches")
     p.add_argument("--no-fulltext", action="store_true", help="only save the index, no full text")
     p.add_argument("--resume", action="store_true", help="skip ids already in index.jsonl")
+    p.add_argument("--start-page", type=int, default=0,
+                   help="first list page (default: 1, or past already-crawled pages with --resume)")
     p.add_argument("--dry-run", action="store_true", help="just show total count")
     args = p.parse_args()
     crawl(args)

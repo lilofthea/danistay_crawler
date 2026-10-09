@@ -62,17 +62,23 @@ else
   if [ ! -f "$CRED_FILE" ] || [ -z "${username:-}" ] || [ -z "${password:-}" ]; then
     result="no credentials (check $CRED_FILE)"
   else
-    escape_user=$(printf '%s' "$username" | sed 's/\\/\\\\/g')
-    cj=$(mktemp -u)
+    # Credentials go to curl through private temp files (name@file), not as
+    # command-line arguments, which any local user could read with `ps`.
+    secrets=$(umask 077; mktemp -d)
+    trap 'rm -rf "$secrets"' EXIT
+    printf '%s' "$username" | sed 's/\\/\\\\/g' > "$secrets/escape_user"
+    printf '%s' "$username" > "$secrets/user"
+    printf '%s' "$password" > "$secrets/passwd"
+    cj="$secrets/cookies"
     lcode=$(curl -s --max-time 30 -c "$cj" -b "$cj" -A "$UA" \
       --data-urlencode "inputStr=" \
-      --data-urlencode "escapeUser=${escape_user}" \
+      --data-urlencode "escapeUser@$secrets/escape_user" \
       --data-urlencode "preauthid=" \
-      --data-urlencode "user=${username}" \
-      --data-urlencode "passwd=${password}" \
+      --data-urlencode "user@$secrets/user" \
+      --data-urlencode "passwd@$secrets/passwd" \
       --data-urlencode 'ok=Login' \
       -o /dev/null -w '%{http_code}' "$PORTAL_URL")
-    rm -f "$cj"
+    rm -rf "$secrets"
     if [ "$lcode" = "302" ]; then
       result="re-authenticated (login 302)"
     else

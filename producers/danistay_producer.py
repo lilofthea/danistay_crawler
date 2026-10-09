@@ -77,7 +77,7 @@ def iter_new_index_lines(start_line: int, max_rows: int = 0):
                 break
 
 
-def run(max_rows: int = 0, reset: bool = False):
+def run(max_rows: int = 0, reset: bool = False, no_dedup: bool = False):
     producer = LegalDocumentProducer(source="danistay")
     produced = skipped = missing = 0
     start_line = 0 if reset else load_state()
@@ -87,14 +87,15 @@ def run(max_rows: int = 0, reset: bool = False):
 
     try:
         for line_no, meta in iter_new_index_lines(start_line, max_rows):
-            last_line = line_no + 1
             doc_id = meta.get("id", "")
             txt_path = DATA / "docs" / f"{doc_id}.txt"
             if not txt_path.exists():
                 missing += 1      # crawler hasn't fetched full text yet — next run picks it up
+                last_line = line_no + 1
                 continue
             text = txt_path.read_text(encoding="utf-8", errors="replace").strip()
             if not text:
+                last_line = line_no + 1
                 continue
 
             doc = RawDocument(
@@ -108,10 +109,13 @@ def run(max_rows: int = 0, reset: bool = False):
                 karar_tarihi=to_iso_date(meta.get("kararTarihi", "")),
                 metadata={"doc_id": doc_id, "aranan_kelime": meta.get("arananKelime")},
             )
-            if producer.produce(doc):
+            # a failed delivery raises: the checkpoint stays on this line,
+            # so the next run retries it
+            if producer.produce(doc, force=no_dedup):
                 produced += 1
             else:
                 skipped += 1
+            last_line = line_no + 1
             save_state(last_line)   # checkpoint every doc (cheap)
     finally:
         save_state(last_line)
@@ -128,5 +132,7 @@ if __name__ == "__main__":
     ap = argparse.ArgumentParser()
     ap.add_argument("--max-rows", type=int, default=0, help="cap docs per run (0 = all new)")
     ap.add_argument("--reset", action="store_true", help="rescan from index line 0")
+    ap.add_argument("--no-dedup", action="store_true",
+                    help="send even if already marked seen (re-send lost docs)")
     args = ap.parse_args()
-    run(max_rows=args.max_rows, reset=args.reset)
+    run(max_rows=args.max_rows, reset=args.reset, no_dedup=args.no_dedup)

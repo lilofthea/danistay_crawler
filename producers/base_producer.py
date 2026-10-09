@@ -48,14 +48,16 @@ class LegalDocumentProducer:
             return f"{doc.kaynak}:{doc.mevzuat_no}"
         return f"{doc.kaynak}:{doc.url}"
 
-    def produce(self, doc: RawDocument) -> bool:
+    def produce(self, doc: RawDocument, force: bool = False) -> bool:
         """
         Produce a document to legal.raw topic.
         Returns True if produced, False if skipped (dedup).
+        Raises KafkaError if delivery failed, so the caller can stop and retry.
+        force=True sends even if the dedup filter has already seen the doc.
         """
         doc_id = self._make_doc_id(doc)
 
-        if not self.dedup.check_and_mark(doc_id):
+        if not force and self.dedup.is_seen(doc_id):
             logger.debug(f"Skipping duplicate: {doc_id}")
             return False
 
@@ -66,13 +68,16 @@ class LegalDocumentProducer:
                 value=doc.model_dump(mode="json"),
             )
             future.get(timeout=10)   # block to confirm delivery
+            # mark only after delivery: a bloom filter can't un-mark, so a
+            # doc marked before a failed send would be skipped forever
+            self.dedup.mark_seen(doc_id)
             logger.info(f"Produced: {doc_id} → {self.topic}")
             return True
 
         except KafkaError as e:
             logger.error(f"Failed to produce {doc_id}: {e}")
             self._send_to_dlq(doc, error=str(e))
-            return False
+            raise
 
     def _send_to_dlq(self, doc: RawDocument, error: str) -> None:
         """Send failed message to dead letter queue."""

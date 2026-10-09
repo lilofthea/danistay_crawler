@@ -24,7 +24,9 @@ else
   fi
 fi
 
-( crontab -l 2>/dev/null | grep -v "havelsan-login.sh"
+# "|| true": with set -e, an empty crontab (grep -v matches nothing) would
+# otherwise end the subshell before the echo lines and install an empty crontab
+( { crontab -l 2>/dev/null | grep -v "havelsan-login.sh"; } || true
   echo "*/30 0-6,19-23 * * * $HOME/.local/bin/havelsan-login.sh"
   echo "0 7-18 * * * $HOME/.local/bin/havelsan-login.sh"
 ) | crontab -
