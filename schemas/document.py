@@ -10,6 +10,7 @@ class RawDocument(BaseModel):
     kaynak: Literal["danistay", "yargitay", "mevzuat"]
     url: str
     text: str                            # cleaned full text
+    html: Optional[str] = None           # the decision's HTML as fetched (Danıştay, from 2026-10-15)
     # Danıştay / Yargıtay specific
     esas_no: Optional[str] = None
     karar_no: Optional[str] = None

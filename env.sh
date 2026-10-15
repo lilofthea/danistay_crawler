@@ -1,6 +1,7 @@
 # Central pipeline on the home machine (10.150.41.5)
-export REDPANDA_BROKERS="10.150.41.5:19093"   # external listener (19092 advertises localhost)
-export REDIS_HOST="10.150.41.5"
+export REDPANDA_BROKERS="10.150.96.44:19092"   # external listener (19092 advertises localhost)
+export REDIS_HOST="10.150.96.44"
+export REDIS_PORT="6380"
 export DANISTAY_DATA="$DIR/data"
 # publisher checkpoint (default points at the central box's home dir)
 export LEGAL_STATE_DIR="$DIR/.state"

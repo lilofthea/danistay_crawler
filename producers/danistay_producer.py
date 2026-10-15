@@ -94,6 +94,9 @@ def run(max_rows: int = 0, reset: bool = False, no_dedup: bool = False):
                 last_line = line_no + 1
                 continue
             text = txt_path.read_text(encoding="utf-8", errors="replace").strip()
+            html_path = txt_path.with_suffix(".html")
+            html = (html_path.read_text(encoding="utf-8", errors="replace")
+                    if html_path.exists() else None)
             if not text:
                 last_line = line_no + 1
                 continue
@@ -103,6 +106,7 @@ def run(max_rows: int = 0, reset: bool = False, no_dedup: bool = False):
                 kaynak="danistay",
                 url=f"{BASE_URL}/arama/getDokuman?id={doc_id}",
                 text=text,
+                html=html,
                 esas_no=meta.get("esasNo"),
                 karar_no=meta.get("kararNo"),
                 daire=meta.get("daireKurul"),
